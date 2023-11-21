@@ -7,6 +7,9 @@ eval "$__ms_function_name() { /bin/true ; }"
 __ms_ksh_test=$( eval '__text="text" ; if [[ $__text =~ ^(t).* ]] ; then printf "%s" ${.sh.match[1]} ; fi' 2> /dev/null | cat )
 __ms_bash_test=$( eval 'if ( set | grep '$__ms_function_name' | grep -v name > /dev/null 2>&1 ) ; then echo t ; fi ' 2> /dev/null | cat )
 
+# Note: on GAEA, this script only supports bash. That is due to
+# a limitation of GAEA's own system init scripts.
+
 if [[ ! -z "$__ms_ksh_test" ]] ; then
     __ms_shell=ksh
 elif [[ ! -z "$__ms_bash_test" ]] ; then
@@ -18,6 +21,14 @@ fi
 
 target=""
 USERNAME=`echo $LOGNAME | awk '{ print tolower($0)'}`
+
+# Disable -e (abort on non-zero exit status) -u (abort on empty or
+# uninitialized variables) and -x (print every command executed)
+# because they can break system scripts.
+__ms_set_e=$( echo $- | grep e && echo YES || echo NO )
+__ms_set_u=$( echo $- | grep u && echo YES || echo NO )
+__ms_set_x=$( echo $- | grep x && echo YES || echo NO )
+set +eux
 
 if [[ -d /lfs4 ]] ; then
     # We are on NOAA Jet
@@ -47,43 +58,25 @@ elif [[ -d /glade ]] ; then
     target=cheyenne
     module purge
 elif [[ -d /lustre && -d /ncrc ]] ; then
-    # We are on GAEA.
-    if ( ! eval module help > /dev/null 2>&1 ) ; then
-        # We cannot simply load the module command.  The GAEA
-        # /etc/profile modifies a number of module-related variables
-        # before loading the module command.  Without those variables,
-        # the module command fails.  Hence we actually have to source
-        # /etc/profile here.
-        source /etc/profile
-        __ms_source_etc_profile=yes
-    else
-        __ms_source_etc_profile=no
-    fi
-    module purge > /dev/null 2>&1
+  if [[ $( hostname ) =~ gaea* ]] ; then
     module purge
-# clean up after purge
-    unset _LMFILES_
-    unset _LMFILES_000
-    unset _LMFILES_001
-    unset LOADEDMODULES
-    module load modules
-    if [[ -d /opt/cray/ari/modulefiles ]] ; then
-        module use -a /opt/cray/ari/modulefiles
-    fi
-    if [[ -d /opt/cray/pe/ari/modulefiles ]] ; then
-        module use -a /opt/cray/pe/ari/modulefiles
-    fi
-    if [[ -d /opt/cray/pe/craype/default/modulefiles ]] ; then
-        module use -a /opt/cray/pe/craype/default/modulefiles
-    fi
-    if [[ -s /etc/opt/cray/pe/admin-pe/site-config ]] ; then
-        source /etc/opt/cray/pe/admin-pe/site-config
-    fi
-    if [[ "$__ms_source_etc_profile" == yes ]] ; then
-      source /etc/profile
-      unset __ms_source_etc_profile
-    fi
-    target=gaea
+    # Unset the read-only variables $PELOCAL_PRGENV and $RCLOCAL_PRGENV
+    gdb -ex 'call (int) unbind_variable("PELOCAL_PRGENV")' \
+        -ex 'call (int) unbind_variable("RCLOCAL_PRGENV")' \
+        --pid=$$ --batch
+    
+    # Reload system default modules:
+    source /etc/bash.bashrc.local
+
+    # Load EPIC's module directories:
+    source /lustre/f2/dev/role.epic/contrib/Lmod_init.sh
+  fi    
+
+  if ( head /proc/cpuinfo | grep EPYC > /dev/null ) ; then
+      target=gaea_c5
+  else
+      target=gaea
+  fi
 elif [[ "$(hostname)" =~ "Orion" ]]; then
     target="orion"
     module purge
@@ -110,6 +103,21 @@ else
     echo WARNING: UNKNOWN PLATFORM 1>&2
 fi
 
+# Restore shell settings
+if [[ "$__ms_set_e" == YES ]] ; then
+    set -e
+fi
+if [[ "$__ms_set_u" == YES ]] ; then
+    set -u
+fi
+if [[ "$__ms_set_x" == YES ]] ; then
+    set -x
+fi
+
+# Remove script-local variables
+unset __ms_set_e
+unset __ms_set_u
+unset __ms_set_x
 unset __ms_shell
 unset __ms_ksh_test
 unset __ms_bash_test
